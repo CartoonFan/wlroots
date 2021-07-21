@@ -8,9 +8,10 @@
 
 #ifndef WLR_TYPES_WLR_XDG_SHELL_H
 #define WLR_TYPES_WLR_XDG_SHELL_H
-#include <wlr/types/wlr_box.h>
-#include <wlr/types/wlr_seat.h>
+
 #include <wayland-server-core.h>
+#include <wlr/types/wlr_seat.h>
+#include <wlr/util/box.h>
 #include "xdg-shell-protocol.h"
 
 struct wlr_xdg_shell {
@@ -320,6 +321,11 @@ void wlr_xdg_toplevel_set_parent(struct wlr_xdg_surface *surface,
  **/
 void wlr_xdg_popup_destroy(struct wlr_xdg_surface *surface);
 
+/**
+ * Get the position for this popup in the surface parent's coordinate system.
+ */
+void wlr_xdg_popup_get_position(struct wlr_xdg_popup *popup,
+		double *popup_sx, double *popup_sy);
 /**
  * Get the geometry for this positioner based on the anchor rect, gravity, and
  * size of this positioner.

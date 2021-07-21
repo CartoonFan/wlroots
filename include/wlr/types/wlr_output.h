@@ -181,7 +181,12 @@ struct wlr_output {
 
 	struct wl_list cursors; // wlr_output_cursor::link
 	struct wlr_output_cursor *hardware_cursor;
+	struct wlr_swapchain *cursor_swapchain;
+	struct wlr_buffer *cursor_front_buffer;
 	int software_cursor_locks; // number of locks forcing software cursors
+
+	struct wlr_swapchain *swapchain;
+	struct wlr_buffer *back_buffer, *front_buffer;
 
 	struct wl_listener display_destroy;
 

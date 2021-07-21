@@ -301,7 +301,7 @@ _XcursorFileHeaderDestroy (XcursorFileHeader *fileHeader)
 }
 
 static XcursorFileHeader *
-_XcursorFileHeaderCreate (int ntoc)
+_XcursorFileHeaderCreate (XcursorUInt ntoc)
 {
     XcursorFileHeader	*fileHeader;
 
@@ -655,7 +655,7 @@ _XcursorAddPathElt (char *path, const char *elt, int len)
 	elt++;
 	len--;
     }
-    strncpy (path + pathlen, elt, len);
+    memcpy (path + pathlen, elt, len);
     path[pathlen + len] = '\0';
 }
 

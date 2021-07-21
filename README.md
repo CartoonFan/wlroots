@@ -29,7 +29,8 @@ development tools - or any subset of these features you like, because all of
 them work independently of one another and freely compose with anything you want
 to implement yourself.
 
-Check out our [wiki] to get started with wlroots.
+Check out our [wiki] to get started with wlroots. Join our IRC channel:
+[#sway-devel on Libera Chat].
 
 wlroots is developed under the direction of the [sway] project. A variety of
 [wrapper libraries] are available for using it with your favorite programming
@@ -50,20 +51,15 @@ Install dependencies:
 * xkbcommon
 * udev
 * pixman
-* systemd (optional, for logind support)
-* elogind (optional, for logind support on systems without systemd)
-* libuuid (optional, for xdg-foreign support)
+* [libseat]
 
 If you choose to enable X11 support:
 
-* xcb
-* xcb-composite
-* xcb-xfixes
-* xcb-xinput
-* xcb-image
-* xcb-render
-* xcb-errors (optional, for improved error reporting)
-* xcb-icccm (optional, for improved Xwayland introspection)
+* xwayland (build-time only, optional at runtime)
+* libxcb
+* libxcb-render-util
+* libxcb-wm
+* libxcb-errors (optional, for improved error reporting)
 
 Run these commands:
 
@@ -80,6 +76,8 @@ See [CONTRIBUTING.md].
 
 [Wayland]: https://wayland.freedesktop.org/
 [wiki]: https://github.com/swaywm/wlroots/wiki/Getting-started
+[#sway-devel on Libera Chat]: https://web.libera.chat/?channels=#sway-devel
 [Sway]: https://github.com/swaywm/sway
 [wrapper libraries]: https://github.com/search?q=topic%3Abindings+org%3Aswaywm&type=Repositories
+[libseat]: https://git.sr.ht/~kennylevinsen/seatd
 [CONTRIBUTING.md]: https://github.com/swaywm/wlroots/blob/master/CONTRIBUTING.md

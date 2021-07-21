@@ -11,34 +11,36 @@
 
 #include <stdbool.h>
 #include <wlr/backend.h>
-#include <wlr/types/wlr_box.h>
 #include <wlr/types/wlr_output.h>
+
+/**
+ * Output state fields that don't require backend support. Backends can ignore
+ * them without breaking the API contract.
+ */
+#define WLR_OUTPUT_STATE_BACKEND_OPTIONAL \
+	(WLR_OUTPUT_STATE_DAMAGE | \
+	WLR_OUTPUT_STATE_SCALE | \
+	WLR_OUTPUT_STATE_TRANSFORM | \
+	WLR_OUTPUT_STATE_ADAPTIVE_SYNC_ENABLED)
 
 /**
  * A backend implementation of wlr_output.
  *
- * The functions commit, attach_render and rollback_render are mandatory. Other
- * functions are optional.
+ * The commit function is mandatory. Other functions are optional.
  */
 struct wlr_output_impl {
 	/**
 	 * Set the output cursor plane image.
 	 *
-	 * The parameters describe the image texture, its scale and its transform.
-	 * If the scale and transform doesn't match the output's, the backend is
-	 * responsible for scaling and transforming the texture appropriately.
-	 * If texture is NULL, the cursor should be hidden.
+	 * If buffer is NULL, the cursor should be hidden.
 	 *
 	 * The hotspot indicates the offset that needs to be applied to the
 	 * top-left corner of the image to match the cursor position. In other
 	 * words, the image should be displayed at (x - hotspot_x, y - hotspot_y).
-	 *
-	 * If update_texture is true, all parameters need to be taken into account.
-	 * If update_texture is false, only the hotspot is to be updated.
+	 * The hotspot is given in the texture's coordinate space.
 	 */
-	bool (*set_cursor)(struct wlr_output *output, struct wlr_texture *texture,
-		float scale, enum wl_output_transform transform,
-		int32_t hotspot_x, int32_t hotspot_y, bool update_texture);
+	bool (*set_cursor)(struct wlr_output *output, struct wlr_buffer *buffer,
+		int hotspot_x, int hotspot_y);
 	/**
 	 * Set the output cursor plane position.
 	 *
@@ -82,10 +84,28 @@ struct wlr_output_impl {
 	 */
 	size_t (*get_gamma_size)(struct wlr_output *output);
 	/**
-	 * Export the output's current back-buffer as a DMA-BUF.
+	 * Get the list of formats suitable for the cursor, assuming a buffer with
+	 * the specified capabilities.
+	 *
+	 * If unimplemented, the cursor buffer has no format constraint. If NULL is
+	 * returned, no format is suitable.
 	 */
-	bool (*export_dmabuf)(struct wlr_output *output,
-		struct wlr_dmabuf_attributes *attribs);
+	const struct wlr_drm_format_set *(*get_cursor_formats)(
+		struct wlr_output *output, uint32_t buffer_caps);
+	/**
+	 * Get the size suitable for the cursor buffer. Attempts to use a different
+	 * size for the cursor may fail.
+	 */
+	void (*get_cursor_size)(struct wlr_output *output, int *width, int *height);
+	/**
+	 * Get the list of DMA-BUF formats suitable for the primary buffer,
+	 * assuming a buffer with the specified capabilities.
+	 *
+	 * If unimplemented, the primary buffer has no format constraint. If NULL
+	 * is returned, no format is suitable.
+	 */
+	const struct wlr_drm_format_set *(*get_primary_formats)(
+		struct wlr_output *output, uint32_t buffer_caps);
 };
 
 /**

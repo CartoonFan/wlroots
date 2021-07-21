@@ -1,18 +1,10 @@
 #ifndef WLR_CONFIG_H
 #define WLR_CONFIG_H
 
-#mesondefine WLR_HAS_SYSTEMD
-#mesondefine WLR_HAS_ELOGIND
-
-#mesondefine WLR_HAS_LIBSEAT
-
 #mesondefine WLR_HAS_X11_BACKEND
 
+#mesondefine WLR_HAS_GLES2_RENDERER
+
 #mesondefine WLR_HAS_XWAYLAND
-
-#mesondefine WLR_HAS_XCB_ERRORS
-#mesondefine WLR_HAS_XCB_ICCCM
-
-#mesondefine WLR_HAS_XDG_FOREIGN
 
 #endif

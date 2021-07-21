@@ -8,14 +8,36 @@
 #include "backend/drm/iface.h"
 #include "backend/drm/util.h"
 
-static bool legacy_crtc_commit(struct wlr_drm_backend *drm,
-		struct wlr_drm_connector *conn, uint32_t flags) {
+static bool legacy_crtc_test(struct wlr_drm_connector *conn,
+		const struct wlr_output_state *state) {
+	if ((state->committed & WLR_OUTPUT_STATE_BUFFER) &&
+			state->buffer_type == WLR_OUTPUT_STATE_BUFFER_SCANOUT) {
+		wlr_drm_conn_log(conn, WLR_DEBUG,
+			"Cannot use direct scan-out with legacy KMS API");
+		return false;
+	}
+
+	return true;
+}
+
+static bool legacy_crtc_commit(struct wlr_drm_connector *conn,
+		const struct wlr_output_state *state, uint32_t flags, bool test_only) {
+	if (!legacy_crtc_test(conn, state)) {
+		return false;
+	}
+	if (test_only) {
+		return true;
+	}
+
+	struct wlr_drm_backend *drm = conn->backend;
 	struct wlr_output *output = &conn->output;
 	struct wlr_drm_crtc *crtc = conn->crtc;
 	struct wlr_drm_plane *cursor = crtc->cursor;
 
+	bool active = drm_connector_state_active(conn, state);
+
 	uint32_t fb_id = 0;
-	if (crtc->pending.active) {
+	if (active) {
 		struct wlr_drm_fb *fb = plane_get_next_fb(crtc->primary);
 		if (fb == NULL) {
 			wlr_log(WLR_ERROR, "%s: failed to acquire primary FB",
@@ -25,18 +47,19 @@ static bool legacy_crtc_commit(struct wlr_drm_backend *drm,
 		fb_id = fb->id;
 	}
 
-	if (crtc->pending_modeset) {
+	if (drm_connector_state_is_modeset(state)) {
 		uint32_t *conns = NULL;
 		size_t conns_len = 0;
 		drmModeModeInfo *mode = NULL;
-		if (crtc->pending.active) {
+		drmModeModeInfo mode_info = {0};
+		if (active) {
 			conns = &conn->id;
 			conns_len = 1;
-			mode = &crtc->pending.mode->drm_mode;
+			drm_connector_state_mode(conn, state, &mode_info);
+			mode = &mode_info;
 		}
 
-		uint32_t dpms = crtc->pending.active ?
-			DRM_MODE_DPMS_ON : DRM_MODE_DPMS_OFF;
+		uint32_t dpms = active ? DRM_MODE_DPMS_ON : DRM_MODE_DPMS_OFF;
 		if (drmModeConnectorSetProperty(drm->fd, conn->id, conn->props.dpms,
 				dpms) != 0) {
 			wlr_drm_conn_log_errno(conn, WLR_ERROR,
@@ -51,27 +74,27 @@ static bool legacy_crtc_commit(struct wlr_drm_backend *drm,
 		}
 	}
 
-	if (output->pending.committed & WLR_OUTPUT_STATE_GAMMA_LUT) {
+	if (state->committed & WLR_OUTPUT_STATE_GAMMA_LUT) {
 		if (!drm_legacy_crtc_set_gamma(drm, crtc,
-				output->pending.gamma_lut_size, output->pending.gamma_lut)) {
+				state->gamma_lut_size, state->gamma_lut)) {
 			return false;
 		}
 	}
 
-	if ((output->pending.committed & WLR_OUTPUT_STATE_ADAPTIVE_SYNC_ENABLED) &&
+	if ((state->committed & WLR_OUTPUT_STATE_ADAPTIVE_SYNC_ENABLED) &&
 			drm_connector_supports_vrr(conn)) {
 		if (drmModeObjectSetProperty(drm->fd, crtc->id, DRM_MODE_OBJECT_CRTC,
 				crtc->props.vrr_enabled,
-				output->pending.adaptive_sync_enabled) != 0) {
+				state->adaptive_sync_enabled) != 0) {
 			wlr_drm_conn_log_errno(conn, WLR_ERROR,
 				"drmModeObjectSetProperty(VRR_ENABLED) failed");
 			return false;
 		}
-		output->adaptive_sync_status = output->pending.adaptive_sync_enabled ?
+		output->adaptive_sync_status = state->adaptive_sync_enabled ?
 			WLR_OUTPUT_ADAPTIVE_SYNC_ENABLED :
 			WLR_OUTPUT_ADAPTIVE_SYNC_DISABLED;
 		wlr_drm_conn_log(conn, WLR_DEBUG, "VRR %s",
-			output->pending.adaptive_sync_enabled ? "enabled" : "disabled");
+			state->adaptive_sync_enabled ? "enabled" : "disabled");
 	}
 
 	if (cursor != NULL && drm_connector_is_cursor_visible(conn)) {

@@ -9,7 +9,7 @@
 #include <xcb/xcb.h>
 #include <xcb/present.h>
 
-#if WLR_HAS_XCB_ERRORS
+#if HAS_XCB_ERRORS
 #include <xcb/xcb_errors.h>
 #endif
 
@@ -21,7 +21,6 @@
 #include <wlr/interfaces/wlr_pointer.h>
 #include <wlr/interfaces/wlr_touch.h>
 #include <wlr/render/drm_format_set.h>
-#include <wlr/render/wlr_renderer.h>
 
 #define XCB_EVENT_RESPONSE_TYPE_MASK 0x7f
 
@@ -34,9 +33,6 @@ struct wlr_x11_output {
 
 	xcb_window_t win;
 	xcb_present_event_t present_event_id;
-
-	struct wlr_swapchain *swapchain;
-	struct wlr_buffer *back_buffer;
 
 	struct wlr_pointer pointer;
 	struct wlr_input_device pointer_dev;
@@ -75,6 +71,9 @@ struct wlr_x11_backend {
 	xcb_colormap_t colormap;
 	xcb_cursor_t transparent_cursor;
 	xcb_render_pictformat_t argb32;
+
+	bool have_shm;
+	bool have_dri3;
 	uint32_t dri3_major_version, dri3_minor_version;
 
 	size_t requested_outputs;
@@ -85,11 +84,11 @@ struct wlr_x11_backend {
 	struct wlr_input_device keyboard_dev;
 
 	int drm_fd;
-	struct wlr_renderer *renderer;
 	struct wlr_drm_format_set dri3_formats;
+	struct wlr_drm_format_set shm_formats;
 	const struct wlr_x11_format *x11_format;
-	struct wlr_drm_format *drm_format;
-	struct wlr_allocator *allocator;
+	struct wlr_drm_format_set primary_dri3_formats;
+	struct wlr_drm_format_set primary_shm_formats;
 	struct wl_event_source *event_source;
 
 	struct {
@@ -103,7 +102,7 @@ struct wlr_x11_backend {
 	// The time we last received an event
 	xcb_timestamp_t time;
 
-#if WLR_HAS_XCB_ERRORS
+#if HAS_XCB_ERRORS
 	xcb_errors_context_t *errors_context;
 #endif
 

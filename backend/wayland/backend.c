@@ -6,8 +6,6 @@
 #include <stdlib.h>
 #include <unistd.h>
 
-#include <wlr/config.h>
-
 #include <drm_fourcc.h>
 #include <wayland-server-core.h>
 #include <xf86drm.h>
@@ -17,9 +15,11 @@
 #include <wlr/interfaces/wlr_output.h>
 #include <wlr/util/log.h>
 
+#include "backend/backend.h"
 #include "backend/wayland.h"
+#include "render/allocator.h"
 #include "render/drm_format_set.h"
-#include "render/gbm_allocator.h"
+#include "render/pixel_format.h"
 #include "render/wlr_renderer.h"
 #include "util/signal.h"
 
@@ -116,7 +116,7 @@ static char *get_render_name(const char *name) {
 	uint32_t flags = 0;
 	int devices_len = drmGetDevices2(flags, NULL, 0);
 	if (devices_len < 0) {
-		wlr_log(WLR_ERROR, "drmGetDevices2 failed");
+		wlr_log(WLR_ERROR, "drmGetDevices2 failed: %s", strerror(-devices_len));
 		return NULL;
 	}
 	drmDevice **devices = calloc(devices_len, sizeof(drmDevice *));
@@ -127,7 +127,7 @@ static char *get_render_name(const char *name) {
 	devices_len = drmGetDevices2(flags, devices, devices_len);
 	if (devices_len < 0) {
 		free(devices);
-		wlr_log(WLR_ERROR, "drmGetDevices2 failed");
+		wlr_log(WLR_ERROR, "drmGetDevices2 failed: %s", strerror(-devices_len));
 		return NULL;
 	}
 
@@ -143,7 +143,12 @@ static char *get_render_name(const char *name) {
 	if (match == NULL) {
 		wlr_log(WLR_ERROR, "Cannot find DRM device %s", name);
 	} else if (!(match->available_nodes & (1 << DRM_NODE_RENDER))) {
-		wlr_log(WLR_ERROR, "DRM device %s has no render node", name);
+		// Likely a split display/render setup. Pick the primary node and hope
+		// Mesa will open the right render node under-the-hood.
+		wlr_log(WLR_DEBUG, "DRM device %s has no render node, "
+			"falling back to primary node", name);
+		assert(match->available_nodes & (1 << DRM_NODE_PRIMARY));
+		render_name = strdup(match->nodes[DRM_NODE_PRIMARY]);
 	} else {
 		render_name = strdup(match->nodes[DRM_NODE_RENDER]);
 	}
@@ -183,6 +188,17 @@ static const struct wl_drm_listener legacy_drm_listener = {
 	.format = legacy_drm_handle_format,
 	.authenticated = legacy_drm_handle_authenticated,
 	.capabilities = legacy_drm_handle_capabilities,
+};
+
+static void shm_handle_format(void *data, struct wl_shm *shm,
+		uint32_t shm_format) {
+	struct wlr_wl_backend *wl = data;
+	uint32_t drm_format = convert_wl_shm_format_to_drm(shm_format);
+	wlr_drm_format_set_add(&wl->shm_formats, drm_format, DRM_FORMAT_MOD_INVALID);
+}
+
+static const struct wl_shm_listener shm_listener = {
+	.format = shm_handle_format,
 };
 
 static void registry_global(void *data, struct wl_registry *registry,
@@ -228,6 +244,9 @@ static void registry_global(void *data, struct wl_registry *registry,
 	} else if (strcmp(iface, wl_drm_interface.name) == 0) {
 		wl->legacy_drm = wl_registry_bind(registry, name, &wl_drm_interface, 1);
 		wl_drm_add_listener(wl->legacy_drm, &legacy_drm_listener, wl);
+	} else if (strcmp(iface, wl_shm_interface.name) == 0) {
+		wl->shm = wl_registry_bind(registry, name, &wl_shm_interface, 1);
+		wl_shm_add_listener(wl->shm, &shm_listener, wl);
 	}
 }
 
@@ -287,22 +306,21 @@ static void backend_destroy(struct wlr_backend *backend) {
 		wlr_input_device_destroy(input_device);
 	}
 
-	wlr_signal_emit_safe(&wl->backend.events.destroy, &wl->backend);
+	struct wlr_wl_buffer *buffer, *tmp_buffer;
+	wl_list_for_each_safe(buffer, tmp_buffer, &wl->buffers, link) {
+		destroy_wl_buffer(buffer);
+	}
+
+	wlr_backend_finish(backend);
 
 	wl_list_remove(&wl->local_display_destroy.link);
 
 	wl_event_source_remove(wl->remote_display_src);
 
-	wlr_renderer_destroy(wl->renderer);
-	wlr_allocator_destroy(wl->allocator);
 	close(wl->drm_fd);
 
+	wlr_drm_format_set_finish(&wl->shm_formats);
 	wlr_drm_format_set_finish(&wl->linux_dmabuf_v1_formats);
-
-	struct wlr_wl_buffer *buffer, *tmp_buffer;
-	wl_list_for_each_safe(buffer, tmp_buffer, &wl->buffers, link) {
-		destroy_wl_buffer(buffer);
-	}
 
 	destroy_wl_seats(wl);
 	if (wl->zxdg_decoration_manager_v1) {
@@ -317,6 +335,9 @@ static void backend_destroy(struct wlr_backend *backend) {
 	if (wl->zwp_linux_dmabuf_v1) {
 		zwp_linux_dmabuf_v1_destroy(wl->zwp_linux_dmabuf_v1);
 	}
+	if (wl->shm) {
+		wl_shm_destroy(wl->shm);
+	}
 	if (wl->zwp_relative_pointer_manager_v1) {
 		zwp_relative_pointer_manager_v1_destroy(wl->zwp_relative_pointer_manager_v1);
 	}
@@ -329,21 +350,22 @@ static void backend_destroy(struct wlr_backend *backend) {
 	free(wl);
 }
 
-static struct wlr_renderer *backend_get_renderer(struct wlr_backend *backend) {
-	struct wlr_wl_backend *wl = get_wl_backend_from_backend(backend);
-	return wl->renderer;
-}
-
 static int backend_get_drm_fd(struct wlr_backend *backend) {
 	struct wlr_wl_backend *wl = get_wl_backend_from_backend(backend);
 	return wl->drm_fd;
 }
 
+static uint32_t get_buffer_caps(struct wlr_backend *backend) {
+	struct wlr_wl_backend *wl = get_wl_backend_from_backend(backend);
+	return (wl->zwp_linux_dmabuf_v1 ? WLR_BUFFER_CAP_DMABUF : 0)
+		| (wl->shm ? WLR_BUFFER_CAP_SHM : 0);
+}
+
 static const struct wlr_backend_impl backend_impl = {
 	.start = backend_start,
 	.destroy = backend_destroy,
-	.get_renderer = backend_get_renderer,
 	.get_drm_fd = backend_get_drm_fd,
+	.get_buffer_caps = get_buffer_caps,
 };
 
 bool wlr_backend_is_wl(struct wlr_backend *b) {
@@ -400,11 +422,6 @@ struct wlr_backend *wlr_wl_backend_create(struct wl_display *display,
 			"Remote Wayland compositor does not support xdg-shell");
 		goto error_registry;
 	}
-	if (!wl->drm_render_name) {
-		wlr_log(WLR_ERROR, "Failed to get DRM render node from remote Wayland "
-			"compositor wl_drm interface");
-		goto error_registry;
-	}
 
 	struct wl_event_loop *loop = wl_display_get_event_loop(wl->local_display);
 	int fd = wl_display_get_fd(wl->remote_display);
@@ -416,61 +433,22 @@ struct wlr_backend *wlr_wl_backend_create(struct wl_display *display,
 	}
 	wl_event_source_check(wl->remote_display_src);
 
-	wlr_log(WLR_DEBUG, "Opening DRM render node %s", wl->drm_render_name);
-	wl->drm_fd = open(wl->drm_render_name, O_RDWR | O_NONBLOCK | O_CLOEXEC);
-	if (wl->drm_fd < 0) {
-		wlr_log_errno(WLR_ERROR, "Failed to open DRM render node %s",
-			wl->drm_render_name);
-		goto error_remote_display_src;
+	if (wl->drm_render_name != NULL) {
+		wlr_log(WLR_DEBUG, "Opening DRM render node %s", wl->drm_render_name);
+		wl->drm_fd = open(wl->drm_render_name, O_RDWR | O_NONBLOCK | O_CLOEXEC);
+		if (wl->drm_fd < 0) {
+			wlr_log_errno(WLR_ERROR, "Failed to open DRM render node %s",
+				wl->drm_render_name);
+			goto error_remote_display_src;
+		}
+	} else {
+		wl->drm_fd = -1;
 	}
 
-	int drm_fd = fcntl(wl->drm_fd, F_DUPFD_CLOEXEC, 0);
-	if (drm_fd < 0) {
-		wlr_log(WLR_ERROR, "fcntl(F_DUPFD_CLOEXEC) failed");
+	struct wlr_renderer *renderer = wlr_backend_get_renderer(&wl->backend);
+	struct wlr_allocator *allocator = backend_get_allocator(&wl->backend);
+	if (renderer == NULL || allocator == NULL) {
 		goto error_drm_fd;
-	}
-
-	struct wlr_gbm_allocator *gbm_alloc = wlr_gbm_allocator_create(drm_fd);
-	if (gbm_alloc == NULL) {
-		wlr_log(WLR_ERROR, "Failed to create GBM allocator");
-		close(drm_fd);
-		goto error_drm_fd;
-	}
-	wl->allocator = &gbm_alloc->base;
-
-	wl->renderer = wlr_renderer_autocreate(&wl->backend);
-	if (wl->renderer == NULL) {
-		wlr_log(WLR_ERROR, "Failed to create renderer");
-		goto error_allocator;
-	}
-
-	uint32_t fmt = DRM_FORMAT_ARGB8888;
-	const struct wlr_drm_format *remote_format =
-		wlr_drm_format_set_get(&wl->linux_dmabuf_v1_formats, fmt);
-	if (remote_format == NULL) {
-		wlr_log(WLR_ERROR, "Remote compositor doesn't support format "
-			"0x%"PRIX32" via linux-dmabuf-unstable-v1", fmt);
-		goto error_renderer;
-	}
-
-	const struct wlr_drm_format_set *render_formats =
-		wlr_renderer_get_dmabuf_render_formats(wl->renderer);
-	if (render_formats == NULL) {
-		wlr_log(WLR_ERROR, "Failed to get available DMA-BUF formats from renderer");
-		goto error_renderer;
-	}
-	const struct wlr_drm_format *render_format =
-		wlr_drm_format_set_get(render_formats, fmt);
-	if (render_format == NULL) {
-		wlr_log(WLR_ERROR, "Renderer doesn't support DRM format 0x%"PRIX32, fmt);
-		goto error_renderer;
-	}
-
-	wl->format = wlr_drm_format_intersect(remote_format, render_format);
-	if (wl->format == NULL) {
-		wlr_log(WLR_ERROR, "Failed to intersect remote and render modifiers "
-			"for format 0x%"PRIX32, fmt);
-		goto error_renderer;
 	}
 
 	wl->local_display_destroy.notify = handle_display_destroy;
@@ -478,10 +456,6 @@ struct wlr_backend *wlr_wl_backend_create(struct wl_display *display,
 
 	return &wl->backend;
 
-error_renderer:
-	wlr_renderer_destroy(wl->renderer);
-error_allocator:
-	wlr_allocator_destroy(wl->allocator);
 error_drm_fd:
 	close(wl->drm_fd);
 error_remote_display_src:
@@ -498,6 +472,7 @@ error_registry:
 error_display:
 	wl_display_disconnect(wl->remote_display);
 error_wl:
+	wlr_backend_finish(&wl->backend);
 	free(wl);
 	return NULL;
 }

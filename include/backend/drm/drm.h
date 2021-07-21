@@ -12,9 +12,9 @@
 #include <wlr/backend/session.h>
 #include <wlr/render/drm_format_set.h>
 #include <xf86drmMode.h>
-#include "iface.h"
-#include "properties.h"
-#include "renderer.h"
+#include "backend/drm/iface.h"
+#include "backend/drm/properties.h"
+#include "backend/drm/renderer.h"
 
 struct wlr_drm_plane {
 	uint32_t type;
@@ -34,23 +34,11 @@ struct wlr_drm_plane {
 
 	struct wlr_drm_format_set formats;
 
-	// Only used by cursor
-	bool cursor_enabled;
-	int32_t cursor_hotspot_x, cursor_hotspot_y;
-
 	union wlr_drm_plane_props props;
-};
-
-struct wlr_drm_crtc_state {
-	bool active;
-	struct wlr_drm_mode *mode;
 };
 
 struct wlr_drm_crtc {
 	uint32_t id;
-
-	bool pending_modeset;
-	struct wlr_drm_crtc_state pending, current;
 
 	// Atomic modesetting only
 	uint32_t mode_id;
@@ -86,13 +74,19 @@ struct wlr_drm_backend {
 	struct wl_listener display_destroy;
 	struct wl_listener session_destroy;
 	struct wl_listener session_active;
+	struct wl_listener parent_destroy;
 	struct wl_listener dev_change;
+	struct wl_listener dev_remove;
 
 	struct wl_list fbs; // wlr_drm_fb.link
 	struct wl_list outputs;
 
 	struct wlr_drm_renderer renderer;
 	struct wlr_session *session;
+
+	uint64_t cursor_width, cursor_height;
+
+	struct wlr_drm_format_set mgpu_formats;
 };
 
 enum wlr_drm_connector_state {
@@ -124,9 +118,10 @@ struct wlr_drm_connector {
 
 	union wlr_drm_connector_props props;
 
-	int32_t cursor_x, cursor_y;
-
-	drmModeCrtc *old_crtc;
+	bool cursor_enabled;
+	int cursor_x, cursor_y;
+	int cursor_width, cursor_height;
+	int cursor_hotspot_x, cursor_hotspot_y;
 
 	struct wl_list link;
 
@@ -145,18 +140,23 @@ struct wlr_drm_backend *get_drm_backend_from_backend(
 bool check_drm_features(struct wlr_drm_backend *drm);
 bool init_drm_resources(struct wlr_drm_backend *drm);
 void finish_drm_resources(struct wlr_drm_backend *drm);
-void restore_drm_outputs(struct wlr_drm_backend *drm);
 void scan_drm_connectors(struct wlr_drm_backend *state);
 int handle_drm_event(int fd, uint32_t mask, void *data);
 void destroy_drm_connector(struct wlr_drm_connector *conn);
-bool drm_connector_set_mode(struct wlr_drm_connector *conn,
-	struct wlr_output_mode *mode);
+bool drm_connector_commit_state(struct wlr_drm_connector *conn,
+	const struct wlr_output_state *state);
 bool drm_connector_is_cursor_visible(struct wlr_drm_connector *conn);
 bool drm_connector_supports_vrr(struct wlr_drm_connector *conn);
 size_t drm_crtc_get_gamma_lut_size(struct wlr_drm_backend *drm,
 	struct wlr_drm_crtc *crtc);
 
 struct wlr_drm_fb *plane_get_next_fb(struct wlr_drm_plane *plane);
+
+bool drm_connector_state_is_modeset(const struct wlr_output_state *state);
+bool drm_connector_state_active(struct wlr_drm_connector *conn,
+	const struct wlr_output_state *state);
+void drm_connector_state_mode(struct wlr_drm_connector *conn,
+	const struct wlr_output_state *state, drmModeModeInfo *mode);
 
 #define wlr_drm_conn_log(conn, verb, fmt, ...) \
 	wlr_log(verb, "connector %s: " fmt, conn->name, ##__VA_ARGS__)

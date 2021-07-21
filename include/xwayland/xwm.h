@@ -5,10 +5,7 @@
 #include <wlr/config.h>
 #include <wlr/xwayland.h>
 #include <xcb/render.h>
-#if WLR_HAS_XCB_ICCCM
-#include <xcb/xcb_icccm.h>
-#endif
-#if WLR_HAS_XCB_ERRORS
+#if HAS_XCB_ERRORS
 #include <xcb/xcb_errors.h>
 #endif
 #include "xwayland/selection.h"
@@ -83,6 +80,7 @@ enum atom_name {
 	DND_ACTION_ASK,
 	DND_ACTION_PRIVATE,
 	NET_CLIENT_LIST,
+	NET_CLIENT_LIST_STACKING,
 	ATOM_LAST // keep last
 };
 
@@ -109,14 +107,18 @@ struct wlr_xwm {
 
 	struct wlr_xwayland_surface *focus_surface;
 
+	// Surfaces in creation order
 	struct wl_list surfaces; // wlr_xwayland_surface::link
+	// Surfaces in bottom-to-top stacking order, for _NET_CLIENT_LIST_STACKING
+	struct wl_list surfaces_in_stack_order; // wlr_xwayland_surface::stack_link
 	struct wl_list unpaired_surfaces; // wlr_xwayland_surface::unpaired_link
 
 	struct wlr_drag *drag;
 	struct wlr_xwayland_surface *drag_focus;
 
 	const xcb_query_extension_reply_t *xfixes;
-#if WLR_HAS_XCB_ERRORS
+	const xcb_query_extension_reply_t *xres;
+#if HAS_XCB_ERRORS
 	xcb_errors_context_t *errors_context;
 #endif
 	unsigned int last_focus_seq;

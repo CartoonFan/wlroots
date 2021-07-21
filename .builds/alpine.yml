@@ -7,18 +7,19 @@ packages:
   - mesa-dev
   - meson
   - pixman-dev
-  - util-linux-dev
   - wayland-dev
   - wayland-protocols
   - xcb-util-image-dev
   - xcb-util-renderutil-dev
   - xcb-util-wm-dev
+  - xwayland
+  - libseat-dev
 sources:
   - https://github.com/swaywm/wlroots
 tasks:
   - setup: |
       cd wlroots
-      meson build -Dauto_features=enabled -Dlogind=disabled -Dlibseat=disabled -Dxcb-errors=disabled
+      meson build --fatal-meson-warnings --default-library=both -Dauto_features=enabled -Dxcb-errors=disabled
   - build: |
       cd wlroots
       ninja -C build

@@ -14,11 +14,36 @@
 #include <wlr/render/dmabuf.h>
 
 struct wlr_buffer;
+struct wlr_renderer;
+
+struct wlr_shm_attributes {
+	int fd;
+	uint32_t format;
+	int width, height, stride;
+	off_t offset;
+};
 
 struct wlr_buffer_impl {
 	void (*destroy)(struct wlr_buffer *buffer);
 	bool (*get_dmabuf)(struct wlr_buffer *buffer,
 		struct wlr_dmabuf_attributes *attribs);
+	bool (*get_shm)(struct wlr_buffer *buffer,
+		struct wlr_shm_attributes *attribs);
+	bool (*begin_data_ptr_access)(struct wlr_buffer *buffer, void **data,
+		uint32_t *format, size_t *stride);
+	void (*end_data_ptr_access)(struct wlr_buffer *buffer);
+};
+
+/**
+ * Buffer capabilities.
+ *
+ * These bits indicate the features supported by a wlr_buffer. There is one bit
+ * per function in wlr_buffer_impl.
+ */
+enum wlr_buffer_cap {
+	WLR_BUFFER_CAP_DATA_PTR = 1 << 0,
+	WLR_BUFFER_CAP_DMABUF = 1 << 1,
+	WLR_BUFFER_CAP_SHM = 1 << 2,
 };
 
 /**
@@ -36,6 +61,7 @@ struct wlr_buffer {
 
 	bool dropped;
 	size_t n_locks;
+	bool accessing_data_ptr;
 
 	struct {
 		struct wl_signal destroy;
@@ -76,6 +102,24 @@ void wlr_buffer_unlock(struct wlr_buffer *buffer);
  */
 bool wlr_buffer_get_dmabuf(struct wlr_buffer *buffer,
 	struct wlr_dmabuf_attributes *attribs);
+/**
+ * Read shared memory attributes of the buffer. If this buffer isn't shared
+ * memory, returns false.
+ *
+ * The returned shared memory attributes are valid for the lifetime of the
+ * wlr_buffer. The caller isn't responsible for cleaning up the shared memory
+ * attributes.
+ */
+bool wlr_buffer_get_shm(struct wlr_buffer *buffer,
+	struct wlr_shm_attributes *attribs);
+/**
+ * Transforms a wl_resource into a wlr_buffer and locks it. Once the caller is
+ * done with the buffer, they must call wlr_buffer_unlock.
+ *
+ * The provided wl_resource must be a wl_buffer.
+ */
+struct wlr_buffer *wlr_buffer_from_resource(struct wlr_renderer *renderer,
+	struct wl_resource *resource);
 
 /**
  * A client buffer.
@@ -84,24 +128,29 @@ struct wlr_client_buffer {
 	struct wlr_buffer base;
 
 	/**
-	 * The buffer resource, if any. Will be NULL if the client destroys it.
-	 */
-	struct wl_resource *resource;
-	/**
-	 * Whether a release event has been sent to the resource.
-	 */
-	bool resource_released;
-	/**
 	 * The buffer's texture, if any. A buffer will not have a texture if the
 	 * client destroys the buffer before it has been released.
 	 */
 	struct wlr_texture *texture;
+	/**
+	 * The buffer this client buffer was created from. NULL if destroyed.
+	 */
+	struct wlr_buffer *source;
 
-	struct wl_listener resource_destroy;
-	struct wl_listener release;
+	// private state
+
+	struct wl_listener source_destroy;
+
+	// If the client buffer has been created from a wl_shm buffer
+	uint32_t shm_source_format;
 };
 
-struct wlr_renderer;
+/**
+ * Creates a wlr_client_buffer from a given wlr_buffer by creating a texture
+ * from it, and copying its wl_resource.
+ */
+struct wlr_client_buffer *wlr_client_buffer_create(struct wlr_buffer *buffer,
+	struct wlr_renderer *renderer);
 
 /**
  * Get a client buffer from a generic buffer. If the buffer isn't a client
@@ -112,18 +161,6 @@ struct wlr_client_buffer *wlr_client_buffer_get(struct wlr_buffer *buffer);
  * Check if a resource is a wl_buffer resource.
  */
 bool wlr_resource_is_buffer(struct wl_resource *resource);
-/**
- * Get the size of a wl_buffer resource.
- */
-bool wlr_resource_get_buffer_size(struct wl_resource *resource,
-	struct wlr_renderer *renderer, int *width, int *height);
-/**
- * Import a client buffer and lock it.
- *
- * Once the caller is done with the buffer, they must call wlr_buffer_unlock.
- */
-struct wlr_client_buffer *wlr_client_buffer_import(
-	struct wlr_renderer *renderer, struct wl_resource *resource);
 /**
  * Try to update the buffer's content. On success, returns the updated buffer
  * and destroys the provided `buffer`. On error, `buffer` is intact and NULL is

@@ -6,20 +6,21 @@
 #include <sys/types.h>
 #include <wayland-server-core.h>
 
-struct session_impl;
+struct libseat;
 
 struct wlr_device {
 	int fd;
+	int device_id;
 	dev_t dev;
 	struct wl_list link;
 
 	struct {
 		struct wl_signal change;
+		struct wl_signal remove;
 	} events;
 };
 
 struct wlr_session {
-	const struct session_impl *impl;
 	/*
 	 * Signal for when the session becomes active/inactive.
 	 * It's called when we swap virtual terminal.
@@ -36,6 +37,9 @@ struct wlr_session {
 	struct udev *udev;
 	struct udev_monitor *mon;
 	struct wl_event_source *udev_event;
+
+	struct libseat *seat_handle;
+	struct wl_event_source *libseat_event;
 
 	struct wl_list devices;
 
@@ -58,8 +62,9 @@ struct wlr_session_add_event {
  * This should not be called if another program is already in control
  * of the terminal (Xorg, another Wayland compositor, etc.).
  *
- * If logind support is not enabled, you must have CAP_SYS_ADMIN or be root.
- * It is safe to drop privileges after this is called.
+ * If libseat support is not enabled, or if a standalone backend is to be used,
+ * then you must have CAP_SYS_ADMIN or be root. It is safe to drop privileges
+ * after this is called.
  *
  * Returns NULL on error.
  */

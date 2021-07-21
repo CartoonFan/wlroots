@@ -79,6 +79,7 @@ static void send_touch_down_event(struct wlr_x11_output *output,
 		.touch_id = touch_id,
 	};
 	wlr_signal_emit_safe(&output->touch.events.down, &ev);
+	wlr_signal_emit_safe(&output->touch.events.frame, NULL);
 }
 
 static void send_touch_motion_event(struct wlr_x11_output *output,
@@ -91,6 +92,7 @@ static void send_touch_motion_event(struct wlr_x11_output *output,
 		.touch_id = touch_id,
 	};
 	wlr_signal_emit_safe(&output->touch.events.motion, &ev);
+	wlr_signal_emit_safe(&output->touch.events.frame, NULL);
 }
 
 static void send_touch_up_event(struct wlr_x11_output *output,
@@ -101,6 +103,7 @@ static void send_touch_up_event(struct wlr_x11_output *output,
 		.touch_id = touch_id,
 	};
 	wlr_signal_emit_safe(&output->touch.events.up, &ev);
+	wlr_signal_emit_safe(&output->touch.events.frame, NULL);
 }
 
 static struct wlr_x11_touchpoint* get_touchpoint_from_x11_touch_id(struct wlr_x11_output *output,
@@ -122,6 +125,10 @@ void handle_x11_xinput_event(struct wlr_x11_backend *x11,
 	case XCB_INPUT_KEY_PRESS: {
 		xcb_input_key_press_event_t *ev =
 			(xcb_input_key_press_event_t *)event;
+
+		if (ev->flags & XCB_INPUT_KEY_EVENT_FLAGS_KEY_REPEAT) {
+			return;
+		}
 
 		wlr_keyboard_notify_modifiers(&x11->keyboard, ev->mods.base,
 			ev->mods.latched, ev->mods.locked, ev->mods.effective);

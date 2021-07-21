@@ -52,14 +52,6 @@ struct wlr_texture *wlr_texture_from_dmabuf(struct wlr_renderer *renderer,
 	struct wlr_dmabuf_attributes *attribs);
 
 /**
- * Get the texture width and height.
- *
- * This function is deprecated. Access wlr_texture's width and height fields
- * directly instead.
- */
-void wlr_texture_get_size(struct wlr_texture *texture, int *width, int *height);
-
-/**
  * Returns true if this texture is using a fully opaque format.
  */
 bool wlr_texture_is_opaque(struct wlr_texture *texture);
@@ -75,9 +67,6 @@ bool wlr_texture_write_pixels(struct wlr_texture *texture,
 	uint32_t stride, uint32_t width, uint32_t height,
 	uint32_t src_x, uint32_t src_y, uint32_t dst_x, uint32_t dst_y,
 	const void *data);
-
-bool wlr_texture_to_dmabuf(struct wlr_texture *texture,
-	struct wlr_dmabuf_attributes *attribs);
 
 /**
  * Destroys this wlr_texture.

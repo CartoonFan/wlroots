@@ -274,6 +274,15 @@ void wlr_seat_pointer_send_axis(struct wlr_seat *wlr_seat, uint32_t time,
 		return;
 	}
 
+	bool send_source = false;
+	if (wlr_seat->pointer_state.sent_axis_source) {
+		assert(wlr_seat->pointer_state.cached_axis_source == source);
+	} else {
+		wlr_seat->pointer_state.sent_axis_source = true;
+		wlr_seat->pointer_state.cached_axis_source = source;
+		send_source = true;
+	}
+
 	struct wl_resource *resource;
 	wl_resource_for_each(resource, &client->pointers) {
 		if (wlr_seat_client_from_pointer_resource(resource) == NULL) {
@@ -282,7 +291,7 @@ void wlr_seat_pointer_send_axis(struct wlr_seat *wlr_seat, uint32_t time,
 
 		uint32_t version = wl_resource_get_version(resource);
 
-		if (version >= WL_POINTER_AXIS_SOURCE_SINCE_VERSION) {
+		if (send_source && version >= WL_POINTER_AXIS_SOURCE_SINCE_VERSION) {
 			wl_pointer_send_axis_source(resource, source);
 		}
 		if (value) {
@@ -305,6 +314,8 @@ void wlr_seat_pointer_send_frame(struct wlr_seat *wlr_seat) {
 	if (client == NULL) {
 		return;
 	}
+
+	wlr_seat->pointer_state.sent_axis_source = false;
 
 	struct wl_resource *resource;
 	wl_resource_for_each(resource, &client->pointers) {
@@ -378,10 +389,6 @@ uint32_t wlr_seat_pointer_notify_button(struct wlr_seat *wlr_seat,
 
 	struct wlr_seat_pointer_grab *grab = pointer_state->grab;
 	uint32_t serial = grab->interface->button(grab, time, button, state);
-
-	wlr_log(WLR_DEBUG, "button_count=%zu grab_serial=%"PRIu32" serial=%"PRIu32"",
-		pointer_state->button_count,
-		pointer_state->grab_serial, serial);
 
 	if (serial && pointer_state->button_count == 1 &&
 			state == WLR_BUTTON_PRESSED) {

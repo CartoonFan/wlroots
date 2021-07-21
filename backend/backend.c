@@ -15,9 +15,12 @@
 #include <wlr/backend/session.h>
 #include <wlr/backend/wayland.h>
 #include <wlr/config.h>
+#include <wlr/render/wlr_renderer.h>
 #include <wlr/util/log.h>
 #include "backend/backend.h"
 #include "backend/multi.h"
+#include "render/allocator.h"
+#include "util/signal.h"
 
 #if WLR_HAS_X11_BACKEND
 #include <wlr/backend/x11.h>
@@ -30,6 +33,12 @@ void wlr_backend_init(struct wlr_backend *backend,
 	wl_signal_init(&backend->events.destroy);
 	wl_signal_init(&backend->events.new_input);
 	wl_signal_init(&backend->events.new_output);
+}
+
+void wlr_backend_finish(struct wlr_backend *backend) {
+	wlr_signal_emit_safe(&backend->events.destroy, backend);
+	wlr_allocator_destroy(backend->allocator);
+	wlr_renderer_destroy(backend->renderer);
 }
 
 bool wlr_backend_start(struct wlr_backend *backend) {
@@ -51,9 +60,31 @@ void wlr_backend_destroy(struct wlr_backend *backend) {
 	}
 }
 
+static bool backend_create_renderer(struct wlr_backend *backend) {
+	if (backend->renderer != NULL) {
+		return true;
+	}
+
+	backend->renderer = wlr_renderer_autocreate(backend);
+	if (backend->renderer == NULL) {
+		return false;
+	}
+
+	return true;
+}
+
 struct wlr_renderer *wlr_backend_get_renderer(struct wlr_backend *backend) {
 	if (backend->impl->get_renderer) {
 		return backend->impl->get_renderer(backend);
+	}
+	if (backend_get_buffer_caps(backend) != 0) {
+		// If the backend is capable of presenting buffers, automatically create
+		// the renderer if necessary.
+		if (!backend_create_renderer(backend)) {
+			wlr_log(WLR_ERROR, "Failed to create backend renderer");
+			return NULL;
+		}
+		return backend->renderer;
 	}
 	return NULL;
 }
@@ -72,11 +103,36 @@ clockid_t wlr_backend_get_presentation_clock(struct wlr_backend *backend) {
 	return CLOCK_MONOTONIC;
 }
 
-int backend_get_drm_fd(struct wlr_backend *backend) {
+int wlr_backend_get_drm_fd(struct wlr_backend *backend) {
 	if (!backend->impl->get_drm_fd) {
 		return -1;
 	}
 	return backend->impl->get_drm_fd(backend);
+}
+
+uint32_t backend_get_buffer_caps(struct wlr_backend *backend) {
+	if (!backend->impl->get_buffer_caps) {
+		return 0;
+	}
+
+	return backend->impl->get_buffer_caps(backend);
+}
+
+struct wlr_allocator *backend_get_allocator(struct wlr_backend *backend) {
+	if (backend->allocator != NULL) {
+		return backend->allocator;
+	}
+
+	struct wlr_renderer *renderer = wlr_backend_get_renderer(backend);
+	if (renderer == NULL) {
+		return NULL;
+	}
+
+	backend->allocator = wlr_allocator_autocreate(backend, renderer);
+	if (backend->allocator == NULL) {
+		wlr_log(WLR_ERROR, "Failed to create backend allocator");
+	}
+	return backend->allocator;
 }
 
 static size_t parse_outputs_env(const char *name) {
@@ -229,6 +285,9 @@ struct wlr_backend *wlr_backend_autocreate(struct wl_display *display) {
 
 	char *names = getenv("WLR_BACKENDS");
 	if (names) {
+		wlr_log(WLR_INFO, "Loading user-specified backends due to WLR_BACKENDS: %s",
+			names);
+
 		names = strdup(names);
 		if (names == NULL) {
 			wlr_log(WLR_ERROR, "allocation failed");

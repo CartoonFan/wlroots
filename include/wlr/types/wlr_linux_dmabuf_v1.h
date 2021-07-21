@@ -11,14 +11,16 @@
 
 #include <stdint.h>
 #include <wayland-server-core.h>
+#include <wlr/types/wlr_buffer.h>
 #include <wlr/render/dmabuf.h>
 
 struct wlr_dmabuf_v1_buffer {
-	struct wlr_renderer *renderer;
-	struct wl_resource *buffer_resource;
-	struct wl_resource *params_resource;
+	struct wlr_buffer base;
+
+	struct wl_resource *resource; // can be NULL if the client destroyed it
 	struct wlr_dmabuf_attributes attributes;
-	bool has_modifier;
+
+	struct wl_listener release;
 };
 
 /**
@@ -34,12 +36,12 @@ bool wlr_dmabuf_v1_resource_is_buffer(struct wl_resource *buffer_resource);
 struct wlr_dmabuf_v1_buffer *wlr_dmabuf_v1_buffer_from_buffer_resource(
 	struct wl_resource *buffer_resource);
 
-/**
- * Returns the wlr_dmabuf_buffer if the given resource was created
- * via the linux-dmabuf params protocol
- */
-struct wlr_dmabuf_v1_buffer *wlr_dmabuf_v1_buffer_from_params_resource(
-	struct wl_resource *params_resource);
+struct wlr_linux_buffer_params_v1 {
+	struct wl_resource *resource;
+	struct wlr_linux_dmabuf_v1 *linux_dmabuf;
+	struct wlr_dmabuf_attributes attributes;
+	bool has_modifier;
+};
 
 /* the protocol interface */
 struct wlr_linux_dmabuf_v1 {
@@ -59,12 +61,5 @@ struct wlr_linux_dmabuf_v1 {
  */
 struct wlr_linux_dmabuf_v1 *wlr_linux_dmabuf_v1_create(struct wl_display *display,
 	struct wlr_renderer *renderer);
-
-/**
- * Returns the wlr_linux_dmabuf if the given resource was created
- * via the linux_dmabuf protocol
- */
-struct wlr_linux_dmabuf_v1 *wlr_linux_dmabuf_v1_from_resource(
-	struct wl_resource *resource);
 
 #endif

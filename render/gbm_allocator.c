@@ -35,12 +35,14 @@ static bool export_gbm_bo(struct gbm_bo *bo,
 	int i;
 	int32_t handle = -1;
 	for (i = 0; i < attribs.n_planes; ++i) {
+#if HAS_GBM_BO_GET_FD_FOR_PLANE
+		attribs.fd[i] = gbm_bo_get_fd_for_plane(bo, i);
+		(void)handle;
+#else
 		// GBM is lacking a function to get a FD for a given plane. Instead,
 		// check all planes have the same handle. We can't use
 		// drmPrimeHandleToFD because that messes up handle ref'counting in
 		// the user-space driver.
-		// TODO: use gbm_bo_get_plane_fd when it lands, see
-		// https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/5442
 		union gbm_bo_handle plane_handle = gbm_bo_get_handle_for_plane(bo, i);
 		if (plane_handle.s32 < 0) {
 			wlr_log(WLR_ERROR, "gbm_bo_get_handle_for_plane failed");
@@ -55,6 +57,8 @@ static bool export_gbm_bo(struct gbm_bo *bo,
 		}
 
 		attribs.fd[i] = gbm_bo_get_fd(bo);
+#endif
+
 		if (attribs.fd[i] < 0) {
 			wlr_log(WLR_ERROR, "gbm_bo_get_fd failed");
 			goto error_fd;
@@ -159,12 +163,25 @@ static struct wlr_gbm_allocator *get_gbm_alloc_from_alloc(
 	return (struct wlr_gbm_allocator *)alloc;
 }
 
-struct wlr_gbm_allocator *wlr_gbm_allocator_create(int fd) {
+struct wlr_allocator *wlr_gbm_allocator_create(int drm_fd) {
+	int fd = fcntl(drm_fd, F_DUPFD_CLOEXEC, 0);
+	if (fd < 0) {
+		wlr_log(WLR_ERROR, "fcntl(F_DUPFD_CLOEXEC) failed");
+		return NULL;
+	}
+
+	uint64_t cap;
+	if (drmGetCap(fd, DRM_CAP_PRIME, &cap) ||
+			!(cap & DRM_PRIME_CAP_EXPORT)) {
+		wlr_log(WLR_ERROR, "PRIME export not supported");
+		return NULL;
+	}
+
 	struct wlr_gbm_allocator *alloc = calloc(1, sizeof(*alloc));
 	if (alloc == NULL) {
 		return NULL;
 	}
-	wlr_allocator_init(&alloc->base, &allocator_impl);
+	wlr_allocator_init(&alloc->base, &allocator_impl, WLR_BUFFER_CAP_DMABUF);
 
 	alloc->fd = fd;
 	wl_list_init(&alloc->buffers);
@@ -178,8 +195,11 @@ struct wlr_gbm_allocator *wlr_gbm_allocator_create(int fd) {
 
 	wlr_log(WLR_DEBUG, "Created GBM allocator with backend %s",
 		gbm_device_get_backend_name(alloc->gbm_device));
+	char *drm_name = drmGetDeviceNameFromFd2(fd);
+	wlr_log(WLR_DEBUG, "Using DRM node %s", drm_name);
+	free(drm_name);
 
-	return alloc;
+	return &alloc->base;
 }
 
 static void allocator_destroy(struct wlr_allocator *wlr_alloc) {

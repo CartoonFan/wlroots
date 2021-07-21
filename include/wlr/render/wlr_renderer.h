@@ -13,7 +13,6 @@
 #include <wayland-server-core.h>
 #include <wlr/backend.h>
 #include <wlr/render/wlr_texture.h>
-#include <wlr/types/wlr_box.h>
 
 enum wlr_renderer_read_pixels_flags {
 	WLR_RENDERER_READ_PIXELS_Y_INVERT = 1,
@@ -22,11 +21,14 @@ enum wlr_renderer_read_pixels_flags {
 struct wlr_renderer_impl;
 struct wlr_drm_format_set;
 struct wlr_buffer;
+struct wlr_box;
+struct wlr_fbox;
 
 struct wlr_renderer {
 	const struct wlr_renderer_impl *impl;
 
 	bool rendering;
+	bool rendering_with_buffer;
 
 	struct {
 		struct wl_signal destroy;
@@ -36,6 +38,8 @@ struct wlr_renderer {
 struct wlr_renderer *wlr_renderer_autocreate(struct wlr_backend *backend);
 
 void wlr_renderer_begin(struct wlr_renderer *r, uint32_t width, uint32_t height);
+bool wlr_renderer_begin_with_buffer(struct wlr_renderer *r,
+	struct wlr_buffer *buffer);
 void wlr_renderer_end(struct wlr_renderer *r);
 void wlr_renderer_clear(struct wlr_renderer *r, const float color[static 4]);
 /**
@@ -72,31 +76,11 @@ void wlr_render_rect(struct wlr_renderer *r, const struct wlr_box *box,
 void wlr_render_quad_with_matrix(struct wlr_renderer *r,
 	const float color[static 4], const float matrix[static 9]);
 /**
- * Renders a solid ellipse in the specified color.
- */
-void wlr_render_ellipse(struct wlr_renderer *r, const struct wlr_box *box,
-	const float color[static 4], const float projection[static 9]);
-/**
- * Renders a solid ellipse in the specified color with the specified matrix.
- */
-void wlr_render_ellipse_with_matrix(struct wlr_renderer *r,
-	const float color[static 4], const float matrix[static 9]);
-/**
  * Get the shared-memory formats supporting import usage. Buffers allocated
  * with a format from this list may be imported via wlr_texture_from_pixels.
  */
 const uint32_t *wlr_renderer_get_shm_texture_formats(
 	struct wlr_renderer *r, size_t *len);
-/**
- * Returns true if this wl_buffer is a wl_drm buffer.
- */
-bool wlr_renderer_resource_is_wl_drm_buffer(struct wlr_renderer *renderer,
-	struct wl_resource *buffer);
-/**
- * Gets the width and height of a wl_drm buffer.
- */
-void wlr_renderer_wl_drm_buffer_get_size(struct wlr_renderer *renderer,
-	struct wl_resource *buffer, int *width, int *height);
 /**
  * Get the DMA-BUF formats supporting sampling usage. Buffers allocated with
  * a format from this list may be imported via wlr_texture_from_dmabuf.
@@ -114,11 +98,6 @@ bool wlr_renderer_read_pixels(struct wlr_renderer *r, uint32_t fmt,
 	uint32_t *flags, uint32_t stride, uint32_t width, uint32_t height,
 	uint32_t src_x, uint32_t src_y, uint32_t dst_x, uint32_t dst_y, void *data);
 
-/**
- * Blits the dmabuf in src onto the one in dst.
- */
-bool wlr_renderer_blit_dmabuf(struct wlr_renderer *r,
-	struct wlr_dmabuf_attributes *dst, struct wlr_dmabuf_attributes *src);
 /**
  * Creates necessary shm and invokes the initialization of the implementation.
  *

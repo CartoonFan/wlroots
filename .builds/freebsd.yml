@@ -10,7 +10,6 @@ packages:
   - graphics/png
   - graphics/wayland
   - graphics/wayland-protocols
-  - misc/e2fsprogs-libuuid
   - multimedia/ffmpeg
   - x11/libX11
   - x11/libinput
@@ -20,6 +19,7 @@ packages:
   - x11/xcb-util-errors
   - x11/xcb-util-renderutil
   - x11/xcb-util-wm
+  - x11-servers/xwayland
   - sysutils/seatd
   - gmake
 sources:
@@ -27,7 +27,7 @@ sources:
 tasks:
   - wlroots: |
       cd wlroots
-      meson build -Dauto_features=enabled -Dlogind=disabled
+      meson build --fatal-meson-warnings -Dauto_features=enabled
       ninja -C build
       sudo ninja -C build install
   - tinywl: |

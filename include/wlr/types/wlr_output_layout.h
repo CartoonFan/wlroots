@@ -11,9 +11,9 @@
 
 #include <stdbool.h>
 #include <wayland-util.h>
-#include <wlr/types/wlr_box.h>
 #include <wlr/types/wlr_output.h>
 
+struct wlr_box;
 struct wlr_output_layout_state;
 
 /**
@@ -54,6 +54,10 @@ struct wlr_output_layout *wlr_output_layout_create(void);
 
 void wlr_output_layout_destroy(struct wlr_output_layout *layout);
 
+/**
+ * Get the output layout for the specified output. Returns NULL if no output
+ * matches.
+ */
 struct wlr_output_layout_output *wlr_output_layout_get(
 		struct wlr_output_layout *layout, struct wlr_output *reference);
 

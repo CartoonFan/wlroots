@@ -3,25 +3,31 @@
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>
+#include <fcntl.h>
 
 #include <drm_fourcc.h>
 #include <xcb/dri3.h>
 #include <xcb/present.h>
 #include <xcb/render.h>
+#include <xcb/shm.h>
 #include <xcb/xcb.h>
 #include <xcb/xinput.h>
 
 #include <wlr/interfaces/wlr_output.h>
 #include <wlr/interfaces/wlr_pointer.h>
 #include <wlr/interfaces/wlr_touch.h>
+#include <wlr/render/wlr_renderer.h>
 #include <wlr/types/wlr_matrix.h>
 #include <wlr/util/log.h>
 
 #include "backend/x11.h"
-#include "render/swapchain.h"
-#include "render/wlr_renderer.h"
 #include "util/signal.h"
 #include "util/time.h"
+
+static const uint32_t SUPPORTED_OUTPUT_STATE =
+	WLR_OUTPUT_STATE_BACKEND_OPTIONAL |
+	WLR_OUTPUT_STATE_BUFFER |
+	WLR_OUTPUT_STATE_MODE;
 
 static void parse_xcb_setup(struct wlr_output *output,
 		xcb_connection_t *xcb) {
@@ -79,9 +85,7 @@ static void output_destroy(struct wlr_output *wlr_output) {
 	}
 
 	wl_list_remove(&output->link);
-	wlr_buffer_unlock(output->back_buffer);
-	wlr_swapchain_destroy(output->swapchain);
-	wlr_swapchain_destroy(output->cursor.swapchain);
+
 	if (output->cursor.pic != XCB_NONE) {
 		xcb_render_free_picture(x11->xcb, output->cursor.pic);
 	}
@@ -93,29 +97,12 @@ static void output_destroy(struct wlr_output *wlr_output) {
 	free(output);
 }
 
-static bool output_attach_render(struct wlr_output *wlr_output,
-		int *buffer_age) {
-	struct wlr_x11_output *output = get_x11_output_from_output(wlr_output);
-	struct wlr_x11_backend *x11 = output->x11;
-
-	wlr_buffer_unlock(output->back_buffer);
-	output->back_buffer = wlr_swapchain_acquire(output->swapchain, buffer_age);
-	if (!output->back_buffer) {
-		wlr_log(WLR_ERROR, "Failed to acquire swapchain buffer");
-		return false;
-	}
-
-	if (!wlr_renderer_bind_buffer(x11->renderer, output->back_buffer)) {
-		wlr_log(WLR_ERROR, "Failed to bind buffer to renderer");
-		return false;
-	}
-
-	return true;
-}
-
 static bool output_test(struct wlr_output *wlr_output) {
-	if (wlr_output->pending.committed & WLR_OUTPUT_STATE_ENABLED) {
-		wlr_log(WLR_DEBUG, "Cannot disable an X11 output");
+	uint32_t unsupported =
+		wlr_output->pending.committed & ~SUPPORTED_OUTPUT_STATE;
+	if (unsupported != 0) {
+		wlr_log(WLR_DEBUG, "Unsupported output state fields: 0x%"PRIx32,
+			unsupported);
 		return false;
 	}
 
@@ -143,49 +130,99 @@ static void buffer_handle_buffer_destroy(struct wl_listener *listener,
 	destroy_x11_buffer(buffer);
 }
 
-static struct wlr_x11_buffer *create_x11_buffer(struct wlr_x11_output *output,
-		struct wlr_buffer *wlr_buffer) {
+static xcb_pixmap_t import_dmabuf(struct wlr_x11_output *output,
+		struct wlr_dmabuf_attributes *dmabuf) {
 	struct wlr_x11_backend *x11 = output->x11;
 
-	struct wlr_dmabuf_attributes attrs = {0};
-	if (!wlr_buffer_get_dmabuf(wlr_buffer, &attrs)) {
-		return NULL;
-	}
-
-	if (attrs.format != x11->x11_format->drm) {
+	if (dmabuf->format != x11->x11_format->drm) {
 		// The pixmap's depth must match the window's depth, otherwise Present
 		// will throw a Match error
-		return NULL;
+		return XCB_PIXMAP_NONE;
+	}
+
+	if (dmabuf->flags != 0) {
+		return XCB_PIXMAP_NONE;
 	}
 
 	// xcb closes the FDs after sending them, so we need to dup them here
 	struct wlr_dmabuf_attributes dup_attrs = {0};
-	if (!wlr_dmabuf_attributes_copy(&dup_attrs, &attrs)) {
-		return NULL;
+	if (!wlr_dmabuf_attributes_copy(&dup_attrs, dmabuf)) {
+		return XCB_PIXMAP_NONE;
 	}
 
 	const struct wlr_x11_format *x11_fmt = x11->x11_format;
 	xcb_pixmap_t pixmap = xcb_generate_id(x11->xcb);
 
 	if (x11->dri3_major_version > 1 || x11->dri3_minor_version >= 2) {
-		if (attrs.n_planes > 4) {
+		if (dmabuf->n_planes > 4) {
 			wlr_dmabuf_attributes_finish(&dup_attrs);
-			return NULL;
+			return XCB_PIXMAP_NONE;
 		}
 		xcb_dri3_pixmap_from_buffers(x11->xcb, pixmap, output->win,
-			attrs.n_planes, attrs.width, attrs.height, attrs.stride[0],
-			attrs.offset[0], attrs.stride[1], attrs.offset[1], attrs.stride[2],
-			attrs.offset[2], attrs.stride[3], attrs.offset[3], x11_fmt->depth,
-			x11_fmt->bpp, attrs.modifier, dup_attrs.fd);
+			dmabuf->n_planes, dmabuf->width, dmabuf->height, dmabuf->stride[0],
+			dmabuf->offset[0], dmabuf->stride[1], dmabuf->offset[1],
+			dmabuf->stride[2], dmabuf->offset[2], dmabuf->stride[3],
+			dmabuf->offset[3], x11_fmt->depth, x11_fmt->bpp, dmabuf->modifier,
+			dup_attrs.fd);
 	} else {
 		// PixmapFromBuffers requires DRI3 1.2
-		if (attrs.n_planes != 1 || attrs.modifier != DRM_FORMAT_MOD_INVALID) {
+		if (dmabuf->n_planes != 1
+				|| dmabuf->modifier != DRM_FORMAT_MOD_INVALID) {
 			wlr_dmabuf_attributes_finish(&dup_attrs);
-			return NULL;
+			return XCB_PIXMAP_NONE;
 		}
 		xcb_dri3_pixmap_from_buffer(x11->xcb, pixmap, output->win,
-			attrs.height * attrs.stride[0], attrs.width, attrs.height,
-			attrs.stride[0], x11_fmt->depth, x11_fmt->bpp, dup_attrs.fd[0]);
+			dmabuf->height * dmabuf->stride[0], dmabuf->width, dmabuf->height,
+			dmabuf->stride[0], x11_fmt->depth, x11_fmt->bpp, dup_attrs.fd[0]);
+	}
+
+	return pixmap;
+}
+
+static xcb_pixmap_t import_shm(struct wlr_x11_output *output,
+		struct wlr_shm_attributes *shm) {
+	struct wlr_x11_backend *x11 = output->x11;
+
+	if (shm->format != x11->x11_format->drm) {
+		// The pixmap's depth must match the window's depth, otherwise Present
+		// will throw a Match error
+		return XCB_PIXMAP_NONE;
+	}
+
+	// xcb closes the FD after sending it
+	int fd = fcntl(shm->fd, F_DUPFD_CLOEXEC, 0);
+	if (fd < 0) {
+		wlr_log_errno(WLR_ERROR, "fcntl(F_DUPFD_CLOEXEC) failed");
+		return XCB_PIXMAP_NONE;
+	}
+
+	xcb_shm_seg_t seg = xcb_generate_id(x11->xcb);
+	xcb_shm_attach_fd(x11->xcb, seg, fd, false);
+
+	xcb_pixmap_t pixmap = xcb_generate_id(x11->xcb);
+	xcb_shm_create_pixmap(x11->xcb, pixmap, output->win, shm->width,
+		shm->height, x11->x11_format->depth, seg, shm->offset);
+
+	xcb_shm_detach(x11->xcb, seg);
+
+	return pixmap;
+}
+
+static struct wlr_x11_buffer *create_x11_buffer(struct wlr_x11_output *output,
+		struct wlr_buffer *wlr_buffer) {
+	struct wlr_x11_backend *x11 = output->x11;
+	xcb_pixmap_t pixmap = XCB_PIXMAP_NONE;
+
+	struct wlr_dmabuf_attributes dmabuf_attrs;
+	struct wlr_shm_attributes shm_attrs;
+	if (wlr_buffer_get_dmabuf(wlr_buffer, &dmabuf_attrs)) {
+		pixmap = import_dmabuf(output, &dmabuf_attrs);
+	} else if (wlr_buffer_get_shm(wlr_buffer, &shm_attrs)) {
+		pixmap = import_shm(output, &shm_attrs);
+	}
+
+	if (pixmap == XCB_PIXMAP_NONE) {
+		return NULL;
 	}
 
 	struct wlr_x11_buffer *buffer = calloc(1, sizeof(struct wlr_x11_buffer));
@@ -220,22 +257,10 @@ static struct wlr_x11_buffer *get_or_create_x11_buffer(
 static bool output_commit_buffer(struct wlr_x11_output *output) {
 	struct wlr_x11_backend *x11 = output->x11;
 
-	struct wlr_buffer *buffer = NULL;
-	switch (output->wlr_output.pending.buffer_type) {
-	case WLR_OUTPUT_STATE_BUFFER_RENDER:
-		assert(output->back_buffer != NULL);
+	assert(output->wlr_output.pending.buffer_type ==
+		WLR_OUTPUT_STATE_BUFFER_SCANOUT);
 
-		wlr_renderer_bind_buffer(x11->renderer, NULL);
-
-		buffer = output->back_buffer;
-		output->back_buffer = NULL;
-		break;
-	case WLR_OUTPUT_STATE_BUFFER_SCANOUT:
-		buffer = wlr_buffer_lock(output->wlr_output.pending.buffer);
-		break;
-	}
-	assert(buffer != NULL);
-
+	struct wlr_buffer *buffer = output->wlr_output.pending.buffer;
 	struct wlr_x11_buffer *x11_buffer =
 		get_or_create_x11_buffer(output, buffer);
 	if (!x11_buffer) {
@@ -283,15 +308,10 @@ static bool output_commit_buffer(struct wlr_x11_output *output) {
 		xcb_xfixes_destroy_region(x11->xcb, region);
 	}
 
-	wlr_buffer_unlock(buffer);
-
-	wlr_swapchain_set_buffer_submitted(output->swapchain, x11_buffer->buffer);
-
 	return true;
 
 error:
 	destroy_x11_buffer(x11_buffer);
-	wlr_buffer_unlock(buffer);
 	return false;
 }
 
@@ -338,13 +358,6 @@ static bool output_commit(struct wlr_output *wlr_output) {
 	return true;
 }
 
-static void output_rollback_render(struct wlr_output *wlr_output) {
-	struct wlr_x11_output *output = get_x11_output_from_output(wlr_output);
-	struct wlr_x11_backend *x11 = output->x11;
-
-	wlr_renderer_bind_buffer(x11->renderer, NULL);
-}
-
 static void update_x11_output_cursor(struct wlr_x11_output *output,
 		int32_t hotspot_x, int32_t hotspot_y) {
 	struct wlr_x11_backend *x11 = output->x11;
@@ -368,72 +381,38 @@ static void update_x11_output_cursor(struct wlr_x11_output *output,
 }
 
 static bool output_cursor_to_picture(struct wlr_x11_output *output,
-		struct wlr_texture *texture, enum wl_output_transform transform,
-		int width, int height) {
+		struct wlr_buffer *buffer) {
 	struct wlr_x11_backend *x11 = output->x11;
-	int depth = 32;
-	int stride = width * 4;
+	struct wlr_renderer *renderer = wlr_backend_get_renderer(&x11->backend);
 
 	if (output->cursor.pic != XCB_NONE) {
 		xcb_render_free_picture(x11->xcb, output->cursor.pic);
 	}
 	output->cursor.pic = XCB_NONE;
 
-	if (texture == NULL) {
+	if (buffer == NULL) {
 		return true;
 	}
 
-	if (output->cursor.swapchain == NULL ||
-			output->cursor.swapchain->width != width ||
-			output->cursor.swapchain->height != height) {
-		wlr_swapchain_destroy(output->cursor.swapchain);
-		output->cursor.swapchain = wlr_swapchain_create(
-			x11->allocator, width, height,
-			x11->drm_format);
-		if (output->cursor.swapchain == NULL) {
-			return false;
-		}
-	}
+	int depth = 32;
+	int stride = buffer->width * 4;
 
-	struct wlr_buffer *wlr_buffer =
-		wlr_swapchain_acquire(output->cursor.swapchain, NULL);
-	if (wlr_buffer == NULL) {
-		return false;
-	}
-
-	if (!wlr_renderer_bind_buffer(x11->renderer, wlr_buffer)) {
-		return false;
-	}
-
-	uint8_t *data = malloc(width * height * 4);
+	uint8_t *data = malloc(buffer->height * stride);
 	if (data == NULL) {
 		return false;
 	}
 
-	struct wlr_box cursor_box = {
-		.width = width,
-		.height = height,
-	};
-
-	float projection[9];
-	wlr_matrix_projection(projection, width, height, output->wlr_output.transform);
-
-	float matrix[9];
-	wlr_matrix_project_box(matrix, &cursor_box, transform, 0, projection);
-
-	wlr_renderer_begin(x11->renderer, width, height);
-	wlr_renderer_clear(x11->renderer, (float[]){ 0.0, 0.0, 0.0, 0.0 });
-	wlr_render_texture_with_matrix(x11->renderer, texture, matrix, 1.0);
-	wlr_renderer_end(x11->renderer);
+	if (!wlr_renderer_begin_with_buffer(renderer, buffer)) {
+		free(data);
+		return false;
+	}
 
 	bool result = wlr_renderer_read_pixels(
-		x11->renderer, DRM_FORMAT_ARGB8888, NULL,
-		width * 4, width, height, 0, 0, 0, 0,
+		renderer, DRM_FORMAT_ARGB8888, NULL,
+		stride, buffer->width, buffer->height, 0, 0, 0, 0,
 		data);
 
-	wlr_renderer_bind_buffer(x11->renderer, NULL);
-
-	wlr_buffer_unlock(wlr_buffer);
+	wlr_renderer_end(renderer);
 
 	if (!result) {
 		free(data);
@@ -442,7 +421,7 @@ static bool output_cursor_to_picture(struct wlr_x11_output *output,
 
 	xcb_pixmap_t pix = xcb_generate_id(x11->xcb);
 	xcb_create_pixmap(x11->xcb, depth, pix, output->win,
-		width, height);
+		buffer->width, buffer->height);
 
 	output->cursor.pic = xcb_generate_id(x11->xcb);
 	xcb_render_create_picture(x11->xcb, output->cursor.pic,
@@ -452,9 +431,8 @@ static bool output_cursor_to_picture(struct wlr_x11_output *output,
 	xcb_create_gc(x11->xcb, gc, pix, 0, NULL);
 
 	xcb_put_image(x11->xcb, XCB_IMAGE_FORMAT_Z_PIXMAP,
-		pix, gc, width, height, 0, 0, 0, depth,
-		stride * height * sizeof(uint8_t),
-		data);
+		pix, gc, buffer->width, buffer->height, 0, 0, 0, depth,
+		stride * buffer->height * sizeof(uint8_t), data);
 	free(data);
 	xcb_free_gc(x11->xcb, gc);
 	xcb_free_pixmap(x11->xcb, pix);
@@ -463,42 +441,32 @@ static bool output_cursor_to_picture(struct wlr_x11_output *output,
 }
 
 static bool output_set_cursor(struct wlr_output *wlr_output,
-		struct wlr_texture *texture, float scale,
-		enum wl_output_transform transform,
-		int32_t hotspot_x, int32_t hotspot_y, bool update_texture) {
+		struct wlr_buffer *buffer, int32_t hotspot_x, int32_t hotspot_y) {
 	struct wlr_x11_output *output = get_x11_output_from_output(wlr_output);
 	struct wlr_x11_backend *x11 = output->x11;
-	int width = 0, height = 0;
 
 	if (x11->argb32 == XCB_NONE) {
 		return false;
 	}
 
-	if (texture != NULL) {
-		width = texture->width * wlr_output->scale / scale;
-		height = texture->height * wlr_output->scale / scale;
-	}
-
-	struct wlr_box hotspot = { .x = hotspot_x, .y = hotspot_y };
-	wlr_box_transform(&hotspot, &hotspot,
-		wlr_output_transform_invert(wlr_output->transform),
-		width, height);
-
-	if (!update_texture) {
-		// This means we previously had a failure of some sort.
-		if (texture != NULL && output->cursor.pic == XCB_NONE) {
-			return false;
+	if (buffer != NULL) {
+		if (hotspot_x < 0) {
+			hotspot_x = 0;
 		}
-
-		// Update hotspot without changing cursor image
-		update_x11_output_cursor(output, hotspot.x, hotspot.y);
-		return true;
+		if (hotspot_x > buffer->width) {
+			hotspot_x = buffer->width;
+		}
+		if (hotspot_y < 0) {
+			hotspot_y = 0;
+		}
+		if (hotspot_y > buffer->height) {
+			hotspot_y = buffer->height;
+		}
 	}
 
-	bool success = output_cursor_to_picture(output, texture, transform,
-		width, height);
+	bool success = output_cursor_to_picture(output, buffer);
 
-	update_x11_output_cursor(output, hotspot.x, hotspot.y);
+	update_x11_output_cursor(output, hotspot_x, hotspot_y);
 
 	return success;
 }
@@ -508,14 +476,26 @@ static bool output_move_cursor(struct wlr_output *_output, int x, int y) {
 	return true;
 }
 
+static const struct wlr_drm_format_set *output_get_primary_formats(
+		struct wlr_output *wlr_output, uint32_t buffer_caps) {
+	struct wlr_x11_output *output = get_x11_output_from_output(wlr_output);
+	struct wlr_x11_backend *x11 = output->x11;
+
+	if (x11->have_dri3 && (buffer_caps & WLR_BUFFER_CAP_DMABUF)) {
+		return &output->x11->primary_dri3_formats;
+	} else if (x11->have_shm && (buffer_caps & WLR_BUFFER_CAP_SHM)) {
+		return &output->x11->primary_shm_formats;
+	}
+	return NULL;
+}
+
 static const struct wlr_output_impl output_impl = {
 	.destroy = output_destroy,
-	.attach_render = output_attach_render,
 	.test = output_test,
 	.commit = output_commit,
-	.rollback_render = output_rollback_render,
 	.set_cursor = output_set_cursor,
 	.move_cursor = output_move_cursor,
+	.get_primary_formats = output_get_primary_formats,
 };
 
 struct wlr_output *wlr_x11_output_create(struct wlr_backend *backend) {
@@ -538,14 +518,6 @@ struct wlr_output *wlr_x11_output_create(struct wlr_backend *backend) {
 	wlr_output_init(wlr_output, &x11->backend, &output_impl, x11->wl_display);
 
 	wlr_output_update_custom_mode(wlr_output, 1024, 768, 0);
-
-	output->swapchain = wlr_swapchain_create(x11->allocator,
-		wlr_output->width, wlr_output->height, x11->drm_format);
-	if (!output->swapchain) {
-		wlr_log(WLR_ERROR, "Failed to create swapchain");
-		free(output);
-		return NULL;
-	}
 
 	snprintf(wlr_output->name, sizeof(wlr_output->name), "X11-%zd",
 		++x11->last_output_num);
@@ -637,18 +609,6 @@ void handle_x11_configure_notify(struct wlr_x11_output *output,
 			"Ignoring X11 configure event for height=%d, width=%d",
 			ev->width, ev->height);
 		return;
-	}
-
-	if (output->swapchain->width != ev->width ||
-			output->swapchain->height != ev->height) {
-		struct wlr_swapchain *swapchain = wlr_swapchain_create(
-			output->x11->allocator, ev->width, ev->height,
-			output->x11->drm_format);
-		if (!swapchain) {
-			return;
-		}
-		wlr_swapchain_destroy(output->swapchain);
-		output->swapchain = swapchain;
 	}
 
 	wlr_output_update_custom_mode(&output->wlr_output, ev->width,

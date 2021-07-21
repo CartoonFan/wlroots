@@ -12,7 +12,6 @@
 #include <wlr/render/wlr_renderer.h>
 #include <wlr/types/wlr_cursor.h>
 #include <wlr/types/wlr_keyboard.h>
-#include <wlr/types/wlr_list.h>
 #include <wlr/types/wlr_matrix.h>
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_pointer.h>
@@ -252,10 +251,6 @@ static void new_output_notify(struct wl_listener *listener, void *data) {
 	struct wlr_output *output = data;
 	struct sample_state *sample = wl_container_of(listener, sample, new_output);
 	struct sample_output *sample_output = calloc(1, sizeof(struct sample_output));
-	if (!wl_list_empty(&output->modes)) {
-		struct wlr_output_mode *mode = wl_container_of(output->modes.prev, mode, link);
-		wlr_output_set_mode(output, mode);
-	}
 	sample_output->output = output;
 	sample_output->state = sample;
 	wl_signal_add(&output->events.frame, &sample_output->frame);
@@ -267,6 +262,11 @@ static void new_output_notify(struct wl_listener *listener, void *data) {
 	wlr_xcursor_manager_load(sample->xcursor_manager, output->scale);
 	wlr_xcursor_manager_set_cursor_image(sample->xcursor_manager, "left_ptr",
 		sample->cursor);
+
+	struct wlr_output_mode *mode = wlr_output_preferred_mode(output);
+	if (mode != NULL) {
+		wlr_output_set_mode(output, mode);
+	}
 
 	wlr_output_commit(output);
 }
@@ -297,18 +297,12 @@ static void new_input_notify(struct wl_listener *listener, void *data) {
 		keyboard->destroy.notify = keyboard_destroy_notify;
 		wl_signal_add(&device->keyboard->events.key, &keyboard->key);
 		keyboard->key.notify = keyboard_key_notify;
-		struct xkb_rule_names rules = { 0 };
-		rules.rules = getenv("XKB_DEFAULT_RULES");
-		rules.model = getenv("XKB_DEFAULT_MODEL");
-		rules.layout = getenv("XKB_DEFAULT_LAYOUT");
-		rules.variant = getenv("XKB_DEFAULT_VARIANT");
-		rules.options = getenv("XKB_DEFAULT_OPTIONS");
 		struct xkb_context *context = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
 		if (!context) {
 			wlr_log(WLR_ERROR, "Failed to create XKB context");
 			exit(1);
 		}
-		struct xkb_keymap *keymap = xkb_map_new_from_names(context, &rules,
+		struct xkb_keymap *keymap = xkb_keymap_new_from_names(context, NULL,
 			XKB_KEYMAP_COMPILE_NO_FLAGS);
 		if (!keymap) {
 			wlr_log(WLR_ERROR, "Failed to create XKB keymap");

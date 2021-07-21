@@ -8,7 +8,6 @@
 
 #include <wlr/backend/wayland.h>
 #include <wlr/render/wlr_renderer.h>
-#include <wlr/types/wlr_box.h>
 #include <wlr/types/wlr_pointer.h>
 #include <wlr/render/drm_format_set.h>
 
@@ -21,9 +20,6 @@ struct wlr_wl_backend {
 	struct wl_list devices;
 	struct wl_list outputs;
 	int drm_fd;
-	struct wlr_renderer *renderer;
-	struct wlr_drm_format *format;
-	struct wlr_allocator *allocator;
 	struct wl_list buffers; // wlr_wl_buffer.link
 	size_t requested_outputs;
 	size_t last_output_num;
@@ -38,10 +34,12 @@ struct wlr_wl_backend {
 	struct zxdg_decoration_manager_v1 *zxdg_decoration_manager_v1;
 	struct zwp_pointer_gestures_v1 *zwp_pointer_gestures_v1;
 	struct wp_presentation *presentation;
+	struct wl_shm *shm;
 	struct zwp_linux_dmabuf_v1 *zwp_linux_dmabuf_v1;
 	struct zwp_relative_pointer_manager_v1 *zwp_relative_pointer_manager_v1;
 	struct wl_list seats; // wlr_wl_seat.link
 	struct zwp_tablet_manager_v2 *tablet_manager;
+	struct wlr_drm_format_set shm_formats;
 	struct wlr_drm_format_set linux_dmabuf_v1_formats;
 	struct wl_drm *legacy_drm;
 	char *drm_render_name;
@@ -75,17 +73,12 @@ struct wlr_wl_output {
 	struct zxdg_toplevel_decoration_v1 *zxdg_toplevel_decoration_v1;
 	struct wl_list presentation_feedbacks;
 
-	struct wlr_swapchain *swapchain;
-	struct wlr_buffer *back_buffer;
-
 	uint32_t enter_serial;
 
 	struct {
 		struct wlr_wl_pointer *pointer;
 		struct wl_surface *surface;
-		struct wlr_swapchain *swapchain;
 		int32_t hotspot_x, hotspot_y;
-		int32_t width, height;
 	} cursor;
 };
 

@@ -5,6 +5,7 @@
 #include <wlr/types/wlr_surface.h>
 #include <wlr/util/log.h>
 #include "types/wlr_region.h"
+#include "types/wlr_surface.h"
 #include "util/signal.h"
 
 #define COMPOSITOR_VERSION 4
@@ -66,8 +67,7 @@ static void subcompositor_handle_get_subsurface(struct wl_client *client,
 		return;
 	}
 
-	wlr_subsurface_create(surface, parent, wl_resource_get_version(resource),
-		id, NULL);
+	subsurface_create(surface, parent, wl_resource_get_version(resource), id);
 }
 
 static const struct wl_subcompositor_interface subcompositor_impl = {
@@ -119,8 +119,8 @@ static void compositor_create_surface(struct wl_client *client,
 		struct wl_resource *resource, uint32_t id) {
 	struct wlr_compositor *compositor = compositor_from_resource(resource);
 
-	struct wlr_surface *surface = wlr_surface_create(client,
-		wl_resource_get_version(resource), id, compositor->renderer, NULL);
+	struct wlr_surface *surface = surface_create(client,
+		wl_resource_get_version(resource), id, compositor->renderer);
 	if (surface == NULL) {
 		wl_client_post_no_memory(client);
 		return;

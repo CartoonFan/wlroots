@@ -1,9 +1,9 @@
 project(
 	'wlroots',
 	'c',
-	version: '0.12.0',
+	version: '0.15.0',
 	license: 'MIT',
-	meson_version: '>=0.56.0',
+	meson_version: '>=0.58.1',
 	default_options: [
 		'c_std=c11',
 		'warning_level=2',
@@ -15,10 +15,15 @@ project(
 # necessary for bugfix releases. Increasing soversion is required because
 # wlroots never guarantees ABI stability -- only API stability is guaranteed
 # between minor releases.
-soversion = 7
+soversion = 10
+
+little_endian = host_machine.endian() == 'little'
+big_endian = host_machine.endian() == 'big'
 
 add_project_arguments([
 	'-DWLR_USE_UNSTABLE',
+	'-DWLR_LITTLE_ENDIAN=@0@'.format(little_endian.to_int()),
+	'-DWLR_BIG_ENDIAN=@0@'.format(big_endian.to_int()),
 ], language: 'c')
 
 cc = meson.get_compiler('c')
@@ -45,7 +50,7 @@ add_project_arguments(cc.get_supported_arguments([
 
 # Compute the relative path used by compiler invocations.
 source_root = meson.current_source_dir().split('/')
-build_root = meson.build_root().split('/')
+build_root = meson.global_build_root().split('/')
 relative_dir_parts = []
 i = 0
 in_prefix = true
@@ -81,22 +86,17 @@ else
 endif
 
 features = {
-	'systemd': false,
-	'elogind': false,
-	'libseat': false,
 	'x11-backend': false,
 	'xwayland': false,
+	'gles2-renderer': false,
+}
+internal_features = {
 	'xcb-errors': false,
-	'xcb-icccm': false,
-	'xdg-foreign': false,
 }
 
 wayland_server = dependency('wayland-server', version: '>=1.19')
 wayland_client = dependency('wayland-client')
-wayland_protos = dependency('wayland-protocols', version: '>=1.17')
-egl = dependency('egl')
-glesv2 = dependency('glesv2')
-drm = dependency('libdrm', version: '>=2.4.95')
+drm = dependency('libdrm', version: '>=2.4.105')
 gbm = dependency('gbm', version: '>=17.1.0')
 libinput = dependency('libinput', version: '>=1.14.0')
 xkbcommon = dependency('xkbcommon')
@@ -105,24 +105,10 @@ pixman = dependency('pixman-1')
 math = cc.find_library('m')
 rt = cc.find_library('rt')
 
-if not get_option('xdg-foreign').disabled()
-	uuid = dependency('uuid', required: false)
-	uuid_create = cc.has_function('uuid_create')
-	if uuid.found() or uuid_create
-		features += { 'xdg-foreign': true }
-	elif get_option('xdg-foreign').enabled()
-		error('Missing dependency uuid and uuid_create function not available ' +
-				'cannot build with xdg-foreign support')
-	endif
-endif
-
 wlr_files = []
 wlr_deps = [
 	wayland_server,
 	wayland_client,
-	wayland_protos,
-	egl,
-	glesv2,
 	drm,
 	gbm,
 	libinput,
@@ -143,6 +129,13 @@ subdir('xcursor')
 subdir('xwayland')
 
 subdir('include')
+
+foreach name, have : internal_features
+	add_project_arguments(
+		'-DHAS_@0@=@1@'.format(name.underscorify().to_upper(), have.to_int()),
+		language: 'c',
+	)
+endforeach
 
 wlr_inc = include_directories('.', 'include')
 proto_inc = include_directories('protocol')
@@ -173,7 +166,7 @@ wlroots = declare_dependency(
 
 meson.override_dependency('wlroots', wlroots)
 
-summary(features, bool_yn: true)
+summary(features + internal_features, bool_yn: true)
 
 if get_option('examples')
 	subdir('examples')
